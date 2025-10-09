@@ -139,7 +139,7 @@ def _drop_long_sequences(
     Raises:
         ValueError: If required keys are missing or RL type is unknown.
     """
-    if rl in {RLType.DPO, RLType.IPO, RLType.ORPO, RLType.SIMPO}:
+    if rl in {RLType.DPO, RLType.IPO, RLType.ORPO, RLType.SIMPO, RLType.APO_DOWN, RLType.APO_ZERO}:
         if not (
             sample.get("prompt") and sample.get("chosen") and sample.get("rejected")
         ):

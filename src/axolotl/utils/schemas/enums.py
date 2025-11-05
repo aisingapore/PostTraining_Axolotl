@@ -31,7 +31,8 @@ class RLType(str, Enum):
     ORPO = "orpo"
     KTO = "kto"
     SIMPO = "simpo"
-
+    APO_ZERO = "apo_zero"
+    APO_DOWN = "apo_down"
 
 class ChatTemplate(str, Enum):
     """Chat templates configuration subset"""

@@ -628,6 +628,38 @@ class AxolotlInputConfig(
         },
     )
 
+    use_dynamic_finetuning: bool | None = Field(
+        default=None,
+        json_schema_extra={
+            "description": "Whether to use dynamic fine-tuning for scaled SFT gradients."
+        },
+    )
+
+    use_otr_finetuning: bool | None = Field(
+        default=None,
+        json_schema_extra={
+            "description": "Whether to use OTR fine-tuning."
+        },
+    )
+    otr_K: int | None = Field(
+        default=None,
+        json_schema_extra={
+            "description": "OTR candidate actions."
+        },
+    )
+    otr_kappa: float | None = Field(
+        default=None,
+        json_schema_extra={
+            "description": "OTR exploration temp."
+        },
+    )
+    otr_beta: float | None = Field(
+        default=None,
+        json_schema_extra={
+            "description": "OTR wrong token penalty."
+        },
+    )
+
     chunked_cross_entropy: bool | None = Field(
         default=None,
         json_schema_extra={

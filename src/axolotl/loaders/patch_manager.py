@@ -107,12 +107,30 @@ class PatchManager:
 
     def _apply_chunked_cross_entropy_patch(self):
         if self.cfg.chunked_cross_entropy:
-            from axolotl.monkeypatch.loss.chunked import patch_chunked_ce_loss_fn
+            from axolotl.monkeypatch.loss.chunked import patch_chunked_ce_loss_fn, patch_chunked_otr_loss_fn
 
             if self.cfg.chunked_cross_entropy_num_chunks:
-                patch_chunked_ce_loss_fn(self.cfg.chunked_cross_entropy_num_chunks)
+                if self.cfg.use_otr_finetuning:
+                    patch_chunked_otr_loss_fn(
+                        self.cfg.chunked_cross_entropy_num_chunks,
+                        K=self.cfg.otr_K,
+                        kappa=self.cfg.otr_kappa,
+                        beta=self.cfg.otr_beta,
+                    )
+                else:
+                    patch_chunked_ce_loss_fn(
+                        self.cfg.chunked_cross_entropy_num_chunks,
+                        use_dft=self.cfg.use_dynamic_finetuning,
+                    )
             else:
-                patch_chunked_ce_loss_fn()
+                if self.cfg.use_otr_finetuning:
+                    patch_chunked_otr_loss_fn(
+                        K=self.cfg.otr_K,
+                        kappa=self.cfg.otr_kappa,
+                        beta=self.cfg.otr_beta,
+                    )
+                else:
+                    patch_chunked_ce_loss_fn(use_dft=self.cfg.use_dynamic_finetuning)
 
     def _apply_fsdp_patches(self):
         """Apply patches for FSDP configurations."""

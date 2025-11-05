@@ -60,7 +60,7 @@ class HFRLTrainerBuilder(TrainerBuilderBase):
 
             trainer_kwargs.update(GRPOStrategy.set_trainer_kwargs(self.cfg))
 
-        elif self.cfg.rl in [RLType.DPO, RLType.IPO]:
+        elif self.cfg.rl in [RLType.DPO, RLType.IPO, RLType.APO_DOWN, RLType.APO_ZERO]:
             trainer_cls = DPOStrategy.get_trainer_class()
             trainer_cls_args.append(self.model_ref)
 
@@ -160,7 +160,7 @@ class HFRLTrainerBuilder(TrainerBuilderBase):
             training_args_kwargs.update(GRPOStrategy.set_training_args_kwargs(self.cfg))
             blocklist_args_kwargs = GRPOStrategy.get_blocklist_args_kwargs()
 
-        elif self.cfg.rl in [RLType.DPO, RLType.IPO]:
+        elif self.cfg.rl in [RLType.DPO, RLType.IPO, RLType.APO_DOWN, RLType.APO_ZERO]:
             training_args_cls = AxolotlDPOConfig
             training_args_kwargs.update(DPOStrategy.set_training_args_kwargs(self.cfg))
         else:
@@ -227,7 +227,7 @@ class HFRLTrainerBuilder(TrainerBuilderBase):
         )
         if self.cfg.fsdp_config or self.cfg.fsdp:
             ensure_dtype(trainer.model, dtype=self.cfg.torch_dtype)
-            if self.cfg.rl in [RLType.DPO, RLType.IPO] and trainer.ref_model:
+            if self.cfg.rl in [RLType.DPO, RLType.IPO, RLType.APO_DOWN, RLType.APO_ZERO] and trainer.ref_model:
                 ensure_dtype(trainer.ref_model, dtype=self.cfg.torch_dtype)
 
         trainer = self.hook_post_create_trainer(trainer)

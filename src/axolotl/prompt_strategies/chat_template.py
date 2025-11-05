@@ -3,8 +3,9 @@ HF Chat Templates prompt strategy
 """
 
 import json
+from copy import deepcopy
 from collections import defaultdict
-from typing import TYPE_CHECKING, Any, Dict, List, Set, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Set, Union, Tuple
 
 from pydantic import BaseModel
 from transformers import ProcessorMixin
@@ -394,8 +395,8 @@ class ChatTemplateStrategy(PromptTokenizingStrategy):
 
         prompt = remove_none_values(prompt)
 
-        if not self.is_prompt_batched(prompt) or not self.supports_batched:
-            return self._tokenize_single_prompt(prompt)
+        # if not self.is_prompt_batched(prompt) or not self.supports_batched:
+        #     return self._tokenize_single_prompt(prompt)
 
         res = defaultdict(lambda: [])
         feature_names = list(prompt.keys())
@@ -604,86 +605,190 @@ class ChatTemplateStrategy(PromptTokenizingStrategy):
                 return i
         return -1
 
-    def find_turn(
-        self, turns: list[dict], turn_idx: int, tools: list[dict] | None = None
-    ):
+    def find_turn(                               # type: ignore[override]
+        self,
+        turns: List[Dict[str, Any]],
+        turn_idx: int,
+        tools: List[Dict[str, Any]] | None = None,
+    ) -> Tuple[int, int]:
         """
-        Locate the starting and ending indices of the specified turn in a conversation.
+        Locate the start- and end-token indices of `turn_idx` in the rendered
+        conversation.  Returns (-1, -1) if the boundaries cannot be found.
         """
+
+        IGNORE_TOKEN_ID = -100          # make sure this constant is in scope
+        DUMMY_TEXT      = "[[dummy_message]]"
 
         if turn_idx >= len(turns):
             raise ValueError(f"Turn index {turn_idx} out of range")
 
-        # mistral/gemma3 does not output message if it contains only system message
+        # Special case: some mistral / gemma templates do not emit the whole
+        # conversation if it consists only of a system turn.
         if (
             turn_idx == 0
             and turns[0].get("role") == "system"
-            and ("mistral" in self.tokenizer.name_or_path.lower())
+            and (
+                "mistral" in (self.tokenizer.name_or_path or "").lower()
+                or "gemma"   in (self.tokenizer.name_or_path or "").lower()
+            )
         ):
             return -1, -1
 
-        empty_turn = {
-            "role": turns[turn_idx].get("role"),
-            "content": "[[dummy_message]]",
-        }
+        # ------------------------------------------------------------------
+        # 1) Build two versions of the SAME conversation --------------------
+        # ------------------------------------------------------------------
+        #    a) full_ids        – original conversation
+        #    b) dummy_ids       – identical except that the content of
+        #                        `turn_idx` is replaced by DUMMY_TEXT
+        # ------------------------------------------------------------------
 
-        # Create conversation versions
-        turns_with_empty = turns[:turn_idx] + [empty_turn]
-        turns_with_content = turns[: turn_idx + 1]
+        turns_with_dummy = deepcopy(turns)
 
-        # Generate the conversation up to the turn, with final turn replaced with dummy content
-        dummy_ids = self.prompter.build_prompt(turns_with_empty, tools=tools)  # type: ignore
+        turn_copy = turns_with_dummy[turn_idx].copy()
+        # zap every field that can contribute user tokens
+        for fld in ("content", self.prompter.template_thinking_key, "tool_calls"):
+            if fld in turn_copy:
+                turn_copy[fld] = "" if fld != "tool_calls" else []
+        turn_copy["content"] = DUMMY_TEXT
+        turns_with_dummy[turn_idx] = turn_copy
 
-        # Generate the conversation up to the turn, with final turn included
-        full_ids = self.prompter.build_prompt(turns_with_content, tools=tools)  # type: ignore
+        # Render both conversations with the *same* template
+        try:
+            full_ids  = self.prompter.build_prompt(turns,               tools=tools)
+            dummy_ids = self.prompter.build_prompt(turns_with_dummy,    tools=tools)
+        except Exception as exc:          # Template rendering failed
+            LOG.warning(f"find_turn(): template rendering failed – {exc}")
+            return -1, -1
 
         if not full_ids or not dummy_ids:
-            LOG.warning(f"Empty template generated for turn {turn_idx}")
+            LOG.warning(f"find_turn(): template produced empty output for turn {turn_idx}")
             return -1, -1
 
-        # Find first difference (start of content)
-        start_idx = None
-        min_len = min(len(dummy_ids), len(full_ids))
-        for i in range(min_len):
-            if dummy_ids[i] != full_ids[i]:
-                start_idx = i
-                break
+        # ------------------------------------------------------------------
+        # 2) First position where the two sequences differ  ->  start_idx
+        #    Last  position where they differ               ->  end_idx
+        # ------------------------------------------------------------------
+        #    Note: end_idx is made *exclusive* so it can be used directly
+        #    for Python slicing:  seq[start_idx:end_idx]
+        # ------------------------------------------------------------------
 
+        min_len = min(len(full_ids), len(dummy_ids))
+
+        # forward scan
+        start_idx = next(
+            (i for i in range(min_len) if full_ids[i] != dummy_ids[i]), None
+        )
         if start_idx is None:
-            LOG.warning(f"Could not find content start boundary for turn {turn_idx}")
+            LOG.warning(f"find_turn(): could not locate start boundary for turn {turn_idx}")
             return -1, -1
 
-        # Find last difference (end of content)
-        end_idx = None
-        for i in range(min_len):
-            dummy_pos = len(dummy_ids) - 1 - i
-            full_pos = len(full_ids) - 1 - i
-            if dummy_ids[dummy_pos] != full_ids[full_pos]:
-                end_idx = full_pos + 1  # Add one to include the last token when slice
+        # backward scan
+        for i in range(1, min_len + 1):
+            if full_ids[-i] != dummy_ids[-i]:
+                end_idx = len(full_ids) - i + 1   # +1 -> exclusive
                 break
-
-        if end_idx is None:
-            LOG.warning(f"Could not find content end boundary for turn {turn_idx}")
+        else:
+            LOG.warning(f"find_turn(): could not locate end boundary for turn {turn_idx}")
             return -1, -1
 
-        if end_idx < start_idx:
+        if end_idx <= start_idx:
             LOG.warning(
-                f"Content end boundary is before start boundary for turn {turn_idx}"
+                f"find_turn(): invalid boundaries for turn {turn_idx} "
+                f"(start={start_idx}, end={end_idx})"
             )
             return -1, -1
 
-        if end_idx == start_idx:
-            LOG.warning(
-                f"Content end boundary is the same as start boundary for turn {turn_idx}. This is likely an empty turn."
-            )
-            return -1, -1
-
-        LOG.debug(f"Content boundaries: {start_idx}, {end_idx}")
+        # Debug output (optional)
         LOG.debug(
-            f"Content tokens: {self.tokenizer.convert_ids_to_tokens(full_ids[start_idx:end_idx])}"
+            "find_turn(): turn %d boundaries → (%d, %d) tokens: %s",
+            turn_idx,
+            start_idx,
+            end_idx,
+            self.tokenizer.convert_ids_to_tokens(full_ids[start_idx:end_idx]),
         )
 
         return start_idx, end_idx
+
+    # def find_turn(
+    #     self, turns: list[dict], turn_idx: int, tools: list[dict] | None = None
+    # ):
+    #     """
+    #     Locate the starting and ending indices of the specified turn in a conversation.
+    #     """
+
+    #     if turn_idx >= len(turns):
+    #         raise ValueError(f"Turn index {turn_idx} out of range")
+
+    #     # mistral/gemma3 does not output message if it contains only system message
+    #     if (
+    #         turn_idx == 0
+    #         and turns[0].get("role") == "system"
+    #         and ("mistral" in self.tokenizer.name_or_path.lower())
+    #     ):
+    #         return -1, -1
+
+    #     empty_turn = {
+    #         "role": turns[turn_idx].get("role"),
+    #         "content": "[[dummy_message]]",
+    #     }
+
+    #     # Create conversation versions
+    #     turns_with_empty = turns[:turn_idx] + [empty_turn]
+    #     turns_with_content = turns[: turn_idx + 1]
+
+    #     # Generate the conversation up to the turn, with final turn replaced with dummy content
+    #     dummy_ids = self.prompter.build_prompt(turns_with_empty, tools=tools)  # type: ignore
+
+    #     # Generate the conversation up to the turn, with final turn included
+    #     full_ids = self.prompter.build_prompt(turns_with_content, tools=tools)  # type: ignore
+
+    #     if not full_ids or not dummy_ids:
+    #         LOG.warning(f"Empty template generated for turn {turn_idx}")
+    #         return -1, -1
+
+    #     # Find first difference (start of content)
+    #     start_idx = None
+    #     min_len = min(len(dummy_ids), len(full_ids))
+    #     for i in range(min_len):
+    #         if dummy_ids[i] != full_ids[i]:
+    #             start_idx = i
+    #             break
+
+    #     if start_idx is None:
+    #         LOG.warning(f"Could not find content start boundary for turn {turn_idx}")
+    #         return -1, -1
+
+    #     # Find last difference (end of content)
+    #     end_idx = None
+    #     for i in range(min_len):
+    #         dummy_pos = len(dummy_ids) - 1 - i
+    #         full_pos = len(full_ids) - 1 - i
+    #         if dummy_ids[dummy_pos] != full_ids[full_pos]:
+    #             end_idx = full_pos + 1  # Add one to include the last token when slice
+    #             break
+
+    #     if end_idx is None:
+    #         LOG.warning(f"Could not find content end boundary for turn {turn_idx}")
+    #         return -1, -1
+
+    #     if end_idx < start_idx:
+    #         LOG.warning(
+    #             f"Content end boundary is before start boundary for turn {turn_idx}"
+    #         )
+    #         return -1, -1
+
+    #     if end_idx == start_idx:
+    #         LOG.warning(
+    #             f"Content end boundary is the same as start boundary for turn {turn_idx}. This is likely an empty turn."
+    #         )
+    #         return -1, -1
+
+    #     LOG.debug(f"Content boundaries: {start_idx}, {end_idx}")
+    #     LOG.debug(
+    #         f"Content tokens: {self.tokenizer.convert_ids_to_tokens(full_ids[start_idx:end_idx])}"
+    #     )
+
+    #     return start_idx, end_idx
 
     def get_conversation_thread(self, prompt):
         turns = []
@@ -825,6 +930,9 @@ class ChatTemplateStrategy(PromptTokenizingStrategy):
         if isinstance(tools, list):
             return tools
 
+        if isinstance(tools, str):
+            return json.loads(tools)
+
         raise ValueError(
             "Unknown tools format. Please convert it into a list[dict].\n"
             f"Current format: {type(tools)}"
@@ -837,6 +945,9 @@ class ChatTemplateStrategy(PromptTokenizingStrategy):
 
         if isinstance(messages, list):
             return messages
+
+        if isinstance(messages, str):
+            return json.loads(messages)
 
         raise ValueError(
             "Unknown messages format. Please convert it into a list[dict].\n"

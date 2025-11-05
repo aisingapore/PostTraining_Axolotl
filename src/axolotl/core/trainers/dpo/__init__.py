@@ -22,6 +22,10 @@ class DPOStrategy:
         training_args_kwargs = {}
         if cfg.rl is RLType.IPO:
             training_args_kwargs["loss_type"] = "ipo"
+        if cfg.rl is RLType.APO_ZERO:
+            training_args_kwargs["loss_type"] = "apo_zero"
+        if cfg.rl is RLType.APO_DOWN:
+            training_args_kwargs["loss_type"] = "apo_down"
         # Label smoothing is not compatible with IPO
         if cfg.rl is RLType.DPO and cfg.dpo_label_smoothing:
             training_args_kwargs["label_smoothing"] = cfg.dpo_label_smoothing
